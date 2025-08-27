@@ -1,0 +1,150 @@
+# ECS + EFS Integration Guide
+
+This README explains how to attach an Amazon EFS (Elastic File System) to an **Amazon ECS EC2 launch type** service.
+
+---
+
+## 📌 Prerequisites
+
+* An existing ECS Cluster (EC2 launch type).
+* EC2 instances in the same **VPC and Availability Zones** as the EFS file system.
+* Proper IAM role permissions (`ecsTaskExecutionRole`) to allow EFS mounting.
+* Security groups allowing **NFS (TCP/2049)** between ECS EC2 instances and the EFS mount targets.
+
+⚠️ **Important:**
+EFS is **regional**, meaning you cannot mount an EFS across AWS regions. If your EFS is in a different region than your ECS cluster, you must:
+
+* Create a **new EFS in the same region** as your ECS cluster, OR
+* Replicate data across regions using **AWS DataSync**.
+
+---
+
+## 🔹 Step 1: Create EFS
+
+1. Go to **EFS Console** → Create File System.
+2. Select the **same VPC** as your ECS Cluster.
+3. Add mount targets for **each AZ** where your ECS EC2 instances run.
+4. Attach a **Security Group** that allows inbound NFS (TCP/2049).
+
+---
+
+## 🔹 Step 2: Update ECS Task Definition
+
+Modify your ECS Task Definition JSON to include the EFS volume.
+
+Example snippet for `volumes`:
+
+```json
+"volumes": [
+  {
+    "name": "efs-shared-storage",
+    "efsVolumeConfiguration": {
+      "fileSystemId": "<YOUR-EFS-ID>",
+      "rootDirectory": "/",
+      "transitEncryption": "ENABLED"
+    }
+  }
+]
+```
+
+Then update your container definition with a `mountPoint`:
+
+```json
+"mountPoints": [
+  {
+    "sourceVolume": "efs-shared-storage",
+    "containerPath": "/mnt/efs",
+    "readOnly": false
+  }
+]
+```
+
+Fully updated task definition example:
+
+```{
+  "family": "server-uat",
+  "networkMode": "bridge",
+  "executionRoleArn": "arn:aws:iam::938377297656:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::938377297656:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "server-uat",
+      "image": "938377297656.dkr.ecr.ap-south-1.amazonaws.com/uat-server:c47129c",
+      "cpu": 1000,
+      "memory": 2000,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8081,
+          "hostPort": 0,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "ecs/server-uat",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "mountPoints": [
+        {
+          "sourceVolume": "efs-data",
+          "containerPath": "/mnt/efs",
+          "readOnly": false
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "efs-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-xxxxxxxx",
+        "rootDirectory": "/",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ],
+  "requiresCompatibilities": ["EC2"],
+  "cpu": "1024",
+  "memory": "2048"
+}
+
+```
+
+---
+
+## 🔹 Step 3: Deploy Updated Task Definition
+
+1. Register the new task definition in ECS:
+
+   ```bash
+   aws ecs register-task-definition --cli-input-json file://taskdef.json
+   ```
+2. Update your ECS Service to use the new revision:
+
+   ```bash
+   aws ecs update-service --cluster <CLUSTER_NAME> --service <SERVICE_NAME> --task-definition server-uat:<REVISION>
+   ```
+
+---
+
+## 🔹 Step 4: Verify Mount
+
+1. SSH into an ECS EC2 instance.
+2. Check if the container has `/mnt/efs` mounted:
+
+   ```bash
+   docker exec -it <container-id> bash
+   ls /mnt/efs
+   ```
+
+---
+
+## ✅ Notes
+
+* Use **AWS DataSync** if you need cross-region replication of files.
+* Always use **Transit Encryption** for security.
+* Ensure EC2 security groups allow inbound **TCP/2049** from EFS security group.
